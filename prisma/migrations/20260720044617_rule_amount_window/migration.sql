@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Rule" ADD COLUMN     "maxAmount" DOUBLE PRECISION,
+ADD COLUMN     "minAmount" DOUBLE PRECISION;

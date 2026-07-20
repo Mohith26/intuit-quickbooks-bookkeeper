@@ -1,0 +1,181 @@
+// AutoLedger — Prisma schema
+// Mirrors the QuickBooks Online v3 REST resource shapes we need (Account, Class,
+// Vendor, Customer, Purchase/Deposit/JournalEntry, Report) so LocalQBOClient can
+// implement the same QBOClient interface a real IntuitQBOClient adapter would.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountType {
+  INCOME
+  EXPENSE
+  BANK
+  OTHER_CURRENT_LIABILITY
+  EQUITY
+}
+
+enum PostedType {
+  PURCHASE
+  DEPOSIT
+  JOURNAL_ENTRY
+}
+
+enum CategorizationMethod {
+  RULE
+  LLM
+  NONE
+}
+
+enum CategorizationStatus {
+  QUEUED
+  AUTO_POSTED
+  APPROVED
+  CORRECTED
+  POSTED
+  ROLLED_BACK
+}
+
+/// Chart of accounts (rental real estate). qboId is the QBO-style external ref.
+model Account {
+  id          String      @id @default(uuid())
+  qboId       String      @unique
+  name        String      @unique
+  accountType AccountType
+  detailType  String
+  createdAt   DateTime    @default(now())
+
+  categorizations Categorization[]
+  postedRecords   PostedRecord[]
+  rules           Rule[]
+}
+
+/// One QBO "Class" per rental property.
+model PropertyClass {
+  id        String   @id @default(uuid())
+  qboId     String   @unique
+  name      String   @unique
+  address   String
+  createdAt DateTime @default(now())
+
+  tenants         Customer[]
+  categorizations Categorization[]
+  postedRecords   PostedRecord[]
+  rules           Rule[]
+}
+
+model Vendor {
+  id           String   @id @default(uuid())
+  qboId        String   @unique
+  name         String   @unique
+  displayNames String[] // known aliases/variants seen on bank feeds
+  createdAt    DateTime @default(now())
+
+  transactions Transaction[]
+}
+
+/// Tenant, modeled as a QBO Customer.
+model Customer {
+  id              String        @id @default(uuid())
+  qboId           String        @unique
+  name            String
+  propertyClassId String
+  propertyClass   PropertyClass @relation(fields: [propertyClassId], references: [id])
+  createdAt       DateTime      @default(now())
+
+  transactions Transaction[]
+}
+
+/// One bank-feed line item.
+model Transaction {
+  id                  String   @id @default(uuid())
+  importHash          String   @unique // dedupe key: date+amount+desc+account, stable across re-imports
+  date                DateTime
+  amount              Float // positive = money in (deposit), negative = money out (purchase)
+  description         String
+  rawVendorText       String
+  vendorId            String?
+  vendor              Vendor?  @relation(fields: [vendorId], references: [id])
+  tenantId            String?
+  tenant              Customer? @relation(fields: [tenantId], references: [id])
+  batchLabel          String // which generator batch/persona this came from
+  groundTruthCategory String // known from the synthetic generator; used only by eval/, never by the categorizer
+  groundTruthClassId  String? // known property, ditto
+  isEvalSample        Boolean  @default(false) // true for the 300-txn labeled eval subset
+  createdAt           DateTime @default(now())
+
+  categorization Categorization?
+}
+
+model Categorization {
+  id              String                @id @default(uuid())
+  transactionId   String                @unique
+  transaction     Transaction           @relation(fields: [transactionId], references: [id])
+  method          CategorizationMethod
+  accountId       String?
+  account         Account?              @relation(fields: [accountId], references: [id])
+  classId         String?
+  propertyClass   PropertyClass?        @relation(fields: [classId], references: [id])
+  confidence      Float
+  rationale       String
+  ruleId          String?
+  rule            Rule?                 @relation(fields: [ruleId], references: [id])
+  status          CategorizationStatus  @default(QUEUED)
+  correctedFromId String? // set when a human correction supersedes a prior categorization
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+}
+
+/// Deterministic rule: exact/regex vendor match (+ optional amount-window for
+/// "recurring template" rules, e.g. an ambiguous ACH debit that's only
+/// identifiable by matching both text and a stable recurring amount) -> category + class.
+model Rule {
+  id                String   @id @default(uuid())
+  pattern           String // regex source, matched against rawVendorText/description
+  isRegex           Boolean  @default(true)
+  minAmount         Float? // recurring-template rules constrain by amount window
+  maxAmount         Float?
+  accountId         String
+  account           Account  @relation(fields: [accountId], references: [id])
+  classId           String?
+  propertyClass     PropertyClass? @relation(fields: [classId], references: [id])
+  priority          Int      @default(100) // lower = matched first
+  isActive          Boolean  @default(true)
+  mintedFromCorrection Boolean @default(false)
+  createdAt         DateTime @default(now())
+
+  categorizations Categorization[]
+}
+
+model Batch {
+  id           String    @id @default(uuid())
+  label        String
+  createdAt    DateTime  @default(now())
+  rolledBackAt DateTime?
+
+  postedRecords PostedRecord[]
+}
+
+/// A posted QBO-style record (Purchase/Deposit/JournalEntry) with a Class tag.
+/// qboDocId is the external-ref used for idempotent re-posting.
+model PostedRecord {
+  id            String     @id @default(uuid())
+  qboDocId      String     @unique
+  transactionId String
+  batchId       String
+  batch         Batch      @relation(fields: [batchId], references: [id])
+  postedType    PostedType
+  accountId     String
+  account       Account    @relation(fields: [accountId], references: [id])
+  classId       String
+  propertyClass PropertyClass @relation(fields: [classId], references: [id])
+  amount        Float
+  memo          String
+  postedAt      DateTime   @default(now())
+  rolledBackAt  DateTime?
+}
