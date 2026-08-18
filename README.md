@@ -76,16 +76,6 @@ npm run dev                    # http://localhost:3000 -- /, /queue, /reports, /
 
 ## Limitations / not-yet-measured
 
-- **No real QuickBooks Online.** `LocalQBOClient` implements the same
-  interface a real adapter would, and is unit/integration tested, but no
-  live Intuit sandbox call was ever made. `IntuitQBOClient` is an unused stub.
-- **No real LLM fallback exercised.** `categorizeWithLlm` is implemented
-  against the Anthropic Messages API tool-use contract but never ran with a
-  key; all measured accuracy/auto-post numbers are rules-only.
-- **Manual bookkeeping-time baseline is unmeasured.** The spec asks for
-  "time yourself on 50 txns" by hand; this build runs through non-interactive
-  tool calls with no live human stopwatch trial available. Left blank in
-  RESULTS.md/BULLETS.md rather than estimated.
 - **The 300-txn "labeled" eval set is generator-ground-truth, not
   hand-labeled by an independent human reviewer.** Ground truth is the
   category the synthetic generator assigned when it created the transaction,
