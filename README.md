@@ -8,12 +8,6 @@ JournalEntry with Class tagging), with an accountant-grade audit trail
 (idempotent posting, one-command rollback, per-property P&L) and an accuracy
 eval on a 300-transaction labeled set.
 
-Built from spec `34-intuit-quickbooks-bookkeeper.md` (Intuit/QuickBooks
-Online API track). See `PLAN.md` for the full phase-by-phase task breakdown
-and the scope decision below, `RESULTS.md` for every measured number with
-its exact reproduce command, and `BULLETS.md` for the filled-in resume
-bullets.
-
 ## Scope decision (read this before anything else)
 
 This build environment has **no Intuit Developer account** and **no
