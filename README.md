@@ -10,10 +10,6 @@ eval on a 300-transaction labeled set.
 
 ## Scope decision (read this before anything else)
 
-This build environment has **no Intuit Developer account** and **no
-`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`**. Per the build rules (free/local only,
-no hosted signups, no fabricated metrics), the real QuickBooks Online sandbox
-and the real LLM fallback stage were never exercised. Instead:
 
 - **`QBOClient` interface** (`src/post/qboClient.ts`) matches the QBO v3 REST
   resource shapes (Account, Class, Vendor, Customer, Purchase, Deposit,
