@@ -1,87 +1,45 @@
 # AutoLedger
 
-An automated bookkeeper for small landlords built against the QuickBooks
-Online v3 REST resource shapes: bank-feed transactions are auto-classified to
-the right property/account with a rules-first + LLM-fallback hybrid
-categorizer, posted as proper double-entry records (Purchase/Deposit/
-JournalEntry with Class tagging), with an accountant-grade audit trail
-(idempotent posting, one-command rollback, per-property P&L) and an accuracy
-eval on a 300-transaction labeled set.
+An automated bookkeeper for small landlords. Bank-feed transactions come in as CSV, get classified to the right property and account, and are posted as double-entry records (Purchase, Deposit or JournalEntry, tagged with a property Class) with idempotent posting, one-command batch rollback, and a per-property P&L. The posting layer follows the QuickBooks Online v3 REST resource shapes so the local implementation could be swapped for the real API.
 
-## Scope decision (read this before anything else)
+## How it works
 
+Categorization is rules first, then an LLM fallback, then a confidence threshold. The rules engine checks exact and regex vendor matches, plus recurring-template rules that also require the amount to fall inside a window. A bare vendor match gets confidence 0.98, an amount-window match 0.95, and anything at or above 0.85 is auto-posted. Unmatched transactions go to the LLM stage, which only runs when `ANTHROPIC_API_KEY` is set; otherwise they fall through to the review queue in the Next.js app, where a correction mints a new rule for that vendor.
 
-- **`QBOClient` interface** (`src/post/qboClient.ts`) matches the QBO v3 REST
-  resource shapes (Account, Class, Vendor, Customer, Purchase, Deposit,
-  JournalEntry, Report) exactly. **`LocalQBOClient`** implements it faithfully
-  against Postgres — same idempotency contract (external-ref `qboDocId`),
-  same Class tagging, same Reports-API-shaped P&L. **`IntuitQBOClient`** is a
-  documented stub showing exactly what the production adapter would look
-  like; it's never instantiated.
-- **`categorizeWithLlm`** (`src/categorizer/llm.ts`) is a real Anthropic
-  Messages API tool-use implementation (category + required confidence +
-  rationale), gated behind `ANTHROPIC_API_KEY`. With no key set, it returns
-  `available: false` and the hybrid pipeline falls straight through to the
-  human review queue — which is exactly the spec's own "below-threshold ->
-  human review queue" rule, not a workaround.
+Posting goes through a `QBOClient` interface (`src/post/qboClient.ts`). `LocalQBOClient` implements it against Postgres with an external-ref `qboDocId` as the idempotency key, so re-posting a batch is a no-op. Rollback reverses every record in a batch and puts its categorizations back into a postable state. Next.js 14, TypeScript, Prisma, PostgreSQL 16, vitest.
 
-Every number in RESULTS.md was measured against this local stack, with the
-scope of each measurement stated plainly (rules-only vs. hybrid, etc).
+## Results
 
-## Architecture
+Measured on 2026-07-20 with no API key configured, so the LLM stage never fired and these are rules-path numbers. Full output is in `RESULTS.md`.
 
-```
-seed/        setup-as-code: rental chart of accounts, 3 property Classes,
-             vendors, tenant Customers (idempotent upserts)
-intake/      faker-based bank-feed generator (14 personas, incl. deliberately
-             unmatched "unknown vendor" noise) -> CSV -> Postgres, deduped on
-             a stable date+amount+description+property hash
-categorizer/ rules engine (exact/regex + recurring-template amount-window
-             rules) -> LLM fallback (gated on ANTHROPIC_API_KEY) -> confidence
-             threshold -> auto-post or human review queue
-post/        QBOClient interface + LocalQBOClient (idempotent Purchase/
-             Deposit/JournalEntry posting with Class tagging) + batch rollback
-eval/        300-txn labeled eval: accuracy overall + per category,
-             auto-posted vs. queued rates
-reports/     per-property P&L from the Reports-API-equivalent
-app/         Next.js review queue (accept/correct/batch-approve), reports
-             page, month-end close checklist page
-```
+The generator produced 1,416 transactions across 14 vendor personas, including deliberate unknown-vendor noise. Importing the same CSV twice inserted 1,416 then 0. Categorizing auto-posted 1,297 (91.6%) and queued 119 (8.4%).
 
-Stack: Next.js 14 (App Router) + TypeScript, Prisma + PostgreSQL 16, Anthropic
-SDK (function-calling contract, unused without a key), vitest, `@faker-js/faker`.
+On the 300-transaction eval sample, accuracy excluding queued items was 100.0% (286/286); counting queued items as misses, 95.3% (286/300). Every category scored 25/25 except the two containing the noise (CAM 15/25, Repairs & Maintenance 22/26), and all 14 misses were queued rather than mislabeled.
 
-## Reproduce the metrics (exact commands, see RESULTS.md for full output)
+Posting the 1,297 transactions, resetting their status, and posting again created 1,297 then 0 records. Rollback took net income to 0.00 for all three properties, and re-posting restored the exact prior figures with the count still at 1,297. 12 vitest tests across 4 files pass.
 
-Prereqs: Node 20+, a local Postgres reachable at `DATABASE_URL` in `.env`
-(this build used `docker run -d -p 15544:5432 -e POSTGRES_USER=autoledger -e
-POSTGRES_PASSWORD=autoledger -e POSTGRES_DB=autoledger postgres:16-alpine`).
+The eval ground truth is whatever category the generator assigned, fine for a synthetic corpus but weaker than a hand-labeled real set. I did not time a manual baseline, so there is no time-saved number.
+
+## Setup
+
+Node 20+ and a Postgres at `DATABASE_URL` in `.env` (I used `postgres:16-alpine` in Docker on port 15544).
 
 ```bash
 npm install
-npx prisma migrate deploy      # or: npx prisma migrate reset --force --skip-seed
-
-npm run seed                   # chart of accounts, 3 properties, vendors, baseline rules
-npm run generate:txns          # 1,416 synthetic transactions -> data/transactions.csv
-npm run import:csv             # import; run twice to see the dedupe no-op
-npm run categorize             # rules -> LLM-if-configured -> queue
-npm run eval                   # accuracy + per-category table on the 300-txn eval sample
-npm run post -- my-batch       # idempotent posting; re-run the same command to see 0 created
-npm run rollback -- <batchId>  # one-command rollback (batchId is printed by `post`)
-npm run report                 # per-property P&L
-npm run close                  # full seed->intake->categorize->post->report->eval walkthrough
-npm test                       # vitest: rules, posting idempotency, rollback, eval, correction-lift
-npm run dev                    # http://localhost:3000 -- /, /queue, /reports, /close
+npx prisma migrate deploy
+npm run seed                   # chart of accounts, 3 properties, vendors, rules
+npm run generate:txns
+npm run import:csv             # run twice to see the dedupe no-op
+npm run categorize
+npm run eval
+npm run post -- my-batch       # re-run to see 0 created
+npm run rollback -- <batchId>
+npm run report
+npm run close                  # end-to-end walkthrough
+npm test
+npm run dev                    # /, /queue, /reports, /close
 ```
 
-## Limitations / not-yet-measured
+## Known gaps
 
-- **The 300-txn "labeled" eval set is generator-ground-truth, not
-  hand-labeled by an independent human reviewer.** Ground truth is the
-  category the synthetic generator assigned when it created the transaction,
-  which is a legitimate label for a synthetic corpus but is a weaker claim
-  than an independently hand-labeled real-world set.
-- **Schedule-E export (v2/should-have) was not built** — correctly out of
-  v1 scope per the spec.
-- **No real bank connections** — CSV-only, per the spec's explicit "Out of
-  scope."
+CSV intake only, no live bank connections. The remote API adapter is a stub. No Schedule E export.
